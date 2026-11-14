@@ -146,6 +146,22 @@ textarea.field{min-height:120px;resize:vertical}
 .empty{text-align:center;color:var(--muted);padding:28px 12px}
 .skel{height:54px;border-bottom:1px solid var(--line);background:var(--panel)}
 .note{font-size:13px;color:var(--gold);background:var(--gold-bg);padding:8px 12px;border-radius:10px;margin-bottom:12px}
+/* quiz */
+.qcard{background:var(--surface);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-bottom:14px}
+.qcard h3{margin:0 0 10px;font-size:16px;color:var(--fg)}
+.opts{display:grid;gap:8px}
+.opt{display:block;width:100%;min-height:46px;padding:8px 14px;border-radius:10px;border:1px solid var(--line);background:var(--surface);font-weight:600;text-align:start}
+.opt[aria-pressed="true"]{background:var(--brand);color:var(--brand-fg);border-color:var(--brand)}
+.opt.right{background:var(--good-bg);color:var(--good);border-color:var(--good)}
+.opt.wrong{background:var(--bad-bg);color:var(--bad);border-color:var(--bad)}
+.opt:disabled{cursor:default}
+.scorebox{text-align:center;padding:18px;border-radius:var(--r);background:var(--gold-bg);color:var(--gold);margin-bottom:14px}
+.scorebox b{display:block;font-family:var(--f-disp);font-size:40px;line-height:1.2}
+.qrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 0;border-top:1px solid var(--line)}
+.qrow:first-of-type{border-top:0}
+.qrow .qt{flex:1 1 160px;min-width:0;font-weight:700;overflow-wrap:anywhere}
+.qbanner{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;background:var(--gold-bg);color:var(--gold);border-radius:var(--r);padding:12px 16px;margin-bottom:16px;font-weight:700}
+.qbanner .btn{background:var(--gold);border-color:var(--gold);color:var(--surface)}
 @media (max-width:420px){
   h1{font-size:22px}
   .head,.row{grid-template-columns:24px minmax(0,1fr) repeat(4,33px) 40px;gap:3px;padding-inline:8px}
@@ -207,7 +223,8 @@ var S={
   msg:null,busy:false,confirm:null,rename:null,
   panel:null,addText:'',
   values:{sunday:10,confession:10,mass:5,gospel:10},draft:null,
-  bulk:{cat:'sunday',sel:{}},idSet:{}
+  bulk:{cat:'sunday',sel:{}},idSet:{},
+  quizzes:[],quizHave:false,quiz:null,qdraft:{title:'',per:'2',text:''}
 };
 
 /* ---------- helpers ---------- */
@@ -303,13 +320,13 @@ async function tryServantLogin(value){
   }
 }
 function setRole(r){
-  S.role=r;S.step='choose';S.open=null;S.msg=null;S.confirm=null;S.rename=null;S.q='';
+  S.role=r;S.step='choose';S.open=null;S.msg=null;S.confirm=null;S.rename=null;S.q='';S.quiz=null;
   var q=$('#q');if(q)q.value='';
   sset('sessionStorage','role',r);
   render();
 }
 function logout(){
-  S.role=null;S.step='choose';S.open=null;S.msg=null;S.confirm=null;S.rename=null;S.pwErr='';S.q='';
+  S.role=null;S.step='choose';S.open=null;S.msg=null;S.confirm=null;S.rename=null;S.pwErr='';S.q='';S.quiz=null;
   var q=$('#q');if(q)q.value='';
   sset('sessionStorage','role',null);
   render();
@@ -468,6 +485,193 @@ async function deleteKid(row){
   S.confirm=null;S.busy=false;render();
 }
 
+/* ---------- quizzes ---------- */
+function quizById(id){for(var i=0;i<S.quizzes.length;i++){if(S.quizzes[i].id===id)return S.quizzes[i];}return null;}
+function quizPointId(qid,kid){return 'q_'+qid+'_'+kid;}
+function attempts(qid){var n=0;S.points.forEach(function(p){if(p.id.indexOf('q_'+qid+'_')===0)n++;});return n;}
+function parseQuiz(text){
+  var blocks=String(text||'').split(/\r?\n\s*\r?\n/),qs=[],err=null;
+  blocks.forEach(function(b){
+    if(err)return;
+    var lines=b.split(/\r?\n/).map(function(l){return l.trim();}).filter(Boolean);
+    if(!lines.length)return;
+    var n=qs.length+1,opts=[],correct=-1,many=false;
+    lines.slice(1).forEach(function(l){
+      var c=l.charAt(0)==='*';
+      if(c)l=l.slice(1).trim();
+      if(!l)return;
+      if(c){if(correct>-1)many=true;else correct=opts.length;}
+      opts.push(l.slice(0,120));
+    });
+    if(opts.length<2||opts.length>6)err='سؤال '+n+': لازم يكون له من 2 لـ 6 اختيارات.';
+    else if(correct<0)err='سؤال '+n+': علّم الإجابة الصح بنجمة * في أولها.';
+    else if(many)err='سؤال '+n+': فيه أكتر من إجابة صح، علّم واحدة بس.';
+    else qs.push({q:lines[0].slice(0,300),o:opts,c:correct});
+  });
+  if(!err&&!qs.length)err='اكتب سؤال واحد على الأقل.';
+  if(!err&&qs.length>50)err='أقصى عدد 50 سؤال.';
+  return {qs:qs,err:err};
+}
+async function createQuiz(){
+  if(S.busy)return;
+  var d=S.qdraft,title=String(d.title||'').replace(/\s+/g,' ').trim().slice(0,80);
+  var per=parseInt(d.per,10);
+  if(!title){S.msg={t:'err',text:'اكتب اسم المسابقة.'};render();return;}
+  if(!isFinite(per)||per<1||per>MAX_AMT){S.msg={t:'err',text:'نقاط كل إجابة صح من 1 إلى '+MAX_AMT+'.'};render();return;}
+  var pq=parseQuiz(d.text);
+  if(pq.err){S.msg={t:'err',text:pq.err};render();return;}
+  S.busy=true;S.msg=null;render();
+  try{
+    await S.db.collection('quizzes').add({title:title,per:per,qs:pq.qs,active:true,ts:Date.now()});
+    S.qdraft={title:'',per:String(per),text:''};
+    S.msg={t:'ok',text:'اتعملت المسابقة وبقت شغالة. الولاد هيلاقوها فوق في الصفحة.'};
+  }catch(e){S.msg={t:'err',text:errText(e)};}
+  S.busy=false;render();
+}
+async function toggleQuiz(qz){
+  if(S.busy)return;
+  S.busy=true;S.msg=null;render();
+  try{await S.db.collection('quizzes').doc(qz.id).update({active:!qz.active});}
+  catch(e){S.msg={t:'err',text:errText(e)};}
+  S.busy=false;render();
+}
+async function deleteQuiz(qz){
+  if(S.busy)return;
+  S.busy=true;S.msg=null;render();
+  try{
+    await S.db.collection('quizzes').doc(qz.id).delete();
+    S.msg={t:'ok',text:'اتحذفت المسابقة. النقاط اللي اتسجلت فضلت زي ما هي.'};
+  }catch(e){S.msg={t:'err',text:errText(e)};}
+  S.confirm=null;S.busy=false;render();
+}
+async function submitQuiz(qz){
+  if(S.busy||!S.quiz||!S.quiz.kid)return;
+  var kid=S.quiz.kid,id=quizPointId(qz.id,kid);
+  if(S.idSet[id]){S.msg={t:'err',text:'الاسم ده حلّ المسابقة قبل كده.'};S.quiz.step='name';render();return;}
+  var score=0;
+  qz.qs.forEach(function(x,i){if(S.quiz.ans[i]===x.c)score++;});
+  var pts=score*qz.per;
+  S.busy=true;S.msg=null;render();
+  try{
+    await S.db.collection('points').doc(id).set({kid:kid,cat:'gospel',amt:pts,ts:Date.now(),day:todayKey(),quiz:qz.id});
+    S.quiz.res={score:score,total:qz.qs.length,pts:pts};
+    S.quiz.step='done';
+    window.scrollTo(0,0);
+  }catch(e){S.msg={t:'err',text:errText(e)};}
+  S.busy=false;render();
+}
+function quizBanner(){
+  var act=S.quizzes.filter(function(q){return q.active;});
+  if(S.role!=='kid'||!act.length)return null;
+  return h('div',null,act.map(function(qz){
+    return h('div',{class:'qbanner'},
+      h('span',null,'مسابقة: '+qz.title),
+      h('button',{type:'button',class:'btn small',onclick:function(){
+        S.quiz={id:qz.id,step:'name',kid:null,ans:{},res:null};S.q='';S.msg=null;
+        var q=$('#q');if(q)q.value='';
+        window.scrollTo(0,0);render();
+      }},'ابدأ'));
+  }));
+}
+function quizExit(){
+  S.quiz=null;S.q='';S.msg=null;
+  var q=$('#q');if(q)q.value='';
+  window.scrollTo(0,0);render();
+}
+function quizView(){
+  var qz=quizById(S.quiz.id);
+  if(!qz||!qz.active&&S.quiz.step!=='done'){
+    return h('section',{class:'empty'},h('p',null,'المسابقة دي اتقفلت.'),
+      h('button',{type:'button',class:'btn',onclick:quizExit},'رجوع'));
+  }
+  var Z=S.quiz;
+  if(Z.step==='name'){
+    var q=norm(S.q);
+    var list=S.kids.slice().sort(function(a,b){return a.name.localeCompare(b.name,'ar');})
+      .filter(function(k){return !q||norm(k.name).indexOf(q)>-1;});
+    return h('section',{class:'addbox'},
+      h('h2',null,qz.title),
+      h('p',null,'اختار اسمك من القايمة. '+qz.qs.length+' سؤال، وكل إجابة صح بـ '+qz.per+' نقطة. مرة واحدة بس لكل اسم.'),
+      msgBox(),
+      h('ul',{class:'checks',style:'margin-top:10px;max-height:none'},list.map(function(k){
+        var done=!!S.idSet[quizPointId(qz.id,k.id)];
+        return h('li',null,h('button',{type:'button',class:'chk',disabled:done,onclick:function(){
+          Z.kid=k.id;Z.step='solve';S.q='';S.msg=null;
+          var qi=$('#q');if(qi)qi.value='';
+          window.scrollTo(0,0);render();
+        }},h('span',{class:'cn'},k.name),done?h('span',{class:'chip good'},'حلّ المسابقة'):null));
+      })),
+      !list.length?h('p',{class:'empty'},'مفيش اسم بالشكل ده.'):null,
+      h('div',{class:'submit'},h('button',{type:'button',class:'btn ghost',onclick:quizExit},'رجوع')));
+  }
+  var kid=null;S.kids.forEach(function(k){if(k.id===Z.kid)kid=k;});
+  if(Z.step==='solve'){
+    var answered=Object.keys(Z.ans).length;
+    return h('section',null,
+      h('h2',null,qz.title),
+      h('p',{class:'muted'},(kid?kid.name:'')+' · جاوب على كل الأسئلة ('+answered+' من '+qz.qs.length+')'),
+      qz.qs.map(function(x,i){
+        return h('div',{class:'qcard'},
+          h('h3',null,(i+1)+'. '+x.q),
+          h('div',{class:'opts'},x.o.map(function(o,j){
+            return h('button',{type:'button',class:'opt','aria-pressed':String(Z.ans[i]===j),onclick:function(){Z.ans[i]=j;render();}},o);
+          })));
+      }),
+      msgBox(),
+      h('div',{class:'row2'},
+        h('button',{type:'button',class:'btn',disabled:S.busy||answered<qz.qs.length,onclick:function(){submitQuiz(qz);}},'تسليم الإجابات'),
+        h('button',{type:'button',class:'btn ghost',onclick:function(){Z.step='name';Z.ans={};S.msg=null;render();}},'رجوع')));
+  }
+  /* done */
+  var r=Z.res||{score:0,total:qz.qs.length,pts:0};
+  return h('section',null,
+    h('div',{class:'scorebox'},
+      (kid?kid.name:''),
+      h('b',null,r.score+' / '+r.total),
+      'اتضاف لك '+r.pts+' نقطة في الإنجيل'),
+    qz.qs.map(function(x,i){
+      return h('div',{class:'qcard'},
+        h('h3',null,(i+1)+'. '+x.q),
+        h('div',{class:'opts'},x.o.map(function(o,j){
+          var cls='opt';
+          if(j===x.c)cls+=' right';
+          else if(Z.ans[i]===j)cls+=' wrong';
+          return h('button',{type:'button',class:cls,disabled:true},o,
+            j===x.c?' ✓':(Z.ans[i]===j?' ✗ (إجابتك)':''));
+        })));
+    }),
+    h('div',{class:'submit'},h('button',{type:'button',class:'btn',onclick:quizExit},'رجوع للترتيب')));
+}
+function quizAdminView(){
+  var d=S.qdraft;
+  return h('section',{class:'addbox'},
+    h('h2',null,'المسابقات'),
+    h('p',null,'اكتب كل سؤال في سطر، وتحته الاختيارات كل واحد في سطر. علّم الإجابة الصح بنجمة * في أولها. سيب سطر فاضي بين كل سؤال والتاني.'),
+    h('input',{id:'qt',class:'field',style:'max-width:none',type:'text',maxlength:'80',placeholder:'اسم المسابقة',value:d.title,'aria-label':'اسم المسابقة',
+      oninput:function(e){d.title=e.target.value;}}),
+    h('div',{class:'vrow'},
+      h('label',{for:'qp'},'نقاط كل إجابة صح'),
+      h('input',{id:'qp',class:'field',type:'number',inputmode:'numeric',min:'1',max:String(MAX_AMT),step:'1',value:d.per,
+        oninput:function(e){d.per=e.target.value;}})),
+    h('textarea',{id:'qx',class:'field',rows:'10',style:'margin-top:10px',placeholder:'مين اللي بنى الفلك؟\n*نوح\nإبراهيم\nموسى\n\nكام يوم صام السيد المسيح؟\n10\n*40\n7',
+      oninput:function(e){d.text=e.target.value;}},d.text),
+    h('div',{class:'submit'},h('button',{type:'button',class:'btn',disabled:S.busy,onclick:createQuiz},'إنشاء المسابقة')),
+    msgBox(),
+    S.quizzes.length?h('div',{class:'lbl sep'},'المسابقات الموجودة'):null,
+    S.quizzes.map(function(qz){
+      var confirming=S.confirm==='quiz:'+qz.id;
+      return h('div',{class:'qrow'},
+        h('span',{class:'qt'},qz.title),
+        h('span',{class:'hd'},qz.qs.length+' سؤال · '+attempts(qz.id)+' حلّوها'),
+        h('span',{class:'chip '+(qz.active?'good':'none')},qz.active?'شغالة':'متقفلة'),
+        h('button',{type:'button',class:'btn small ghost',disabled:S.busy,onclick:function(){toggleQuiz(qz);}},qz.active?'قفل':'تفعيل'),
+        confirming
+          ?[h('button',{type:'button',class:'btn small danger',disabled:S.busy,onclick:function(){deleteQuiz(qz);}},'تأكيد الحذف'),
+            h('button',{type:'button',class:'btn small ghost',onclick:function(){S.confirm=null;render();}},'إلغاء')]
+          :h('button',{type:'button',class:'btn small dangerline',onclick:function(){S.confirm='quiz:'+qz.id;render();}},'حذف'));
+    }));
+}
+
 /* ---------- views ---------- */
 function msgBox(){
   return S.msg?h('p',{class:'msg '+S.msg.t,role:'status'},S.msg.text):null;
@@ -513,7 +717,7 @@ function historyView(row){
   return h('ul',{class:'hist'},evs.slice(0,10).map(function(p){
     var confirming=S.confirm==='ev:'+p.id;
     return h('li',null,
-      h('span',{class:'hv '+(p.amt>0?'pos':'neg')},(p.amt>0?'+':'−')+Math.abs(p.amt)),
+      h('span',{class:'hv '+(p.amt>0?'pos':'neg')},(p.amt>=0?'+':'−')+Math.abs(p.amt)),
       h('span',null,catLabel(p.cat)),
       h('span',{class:'hd'},fmt(p.ts)),
       h('span',{class:'sp'}),
@@ -596,7 +800,7 @@ function servantBar(){
       S.panel=(S.panel===id?null:id);S.open=null;S.msg=null;S.draft=null;render();
     }},label);
   }
-  return h('div',{class:'sbar'},b('bulk','تسجيل حضور جماعي'),b('values','قيم النقاط'),b('names','إضافة أسماء'));
+  return h('div',{class:'sbar'},b('bulk','تسجيل حضور جماعي'),b('quiz','المسابقات'),b('values','قيم النقاط'),b('names','إضافة أسماء'));
 }
 function bulkView(){
   var cat=S.bulk.cat,day=todayKey(),v=valueOf(cat),q=norm(S.q);
@@ -657,11 +861,14 @@ function listView(){
     frag.append(h('div',{class:'list'},h('div',{class:'skel'}),h('div',{class:'skel'}),h('div',{class:'skel'})));
     return frag;
   }
+  if(S.quiz&&S.role==='kid')return quizView();
   var rows=model();
+  var qb=quizBanner();if(qb)frag.append(qb);
   var card=myCard(rows);if(card)frag.append(card);
   if(S.role==='servant'){
     frag.append(servantBar());
     var ap=addPanel();if(ap)frag.append(ap);
+    if(S.panel==='quiz')frag.append(quizAdminView());
     if(S.panel==='bulk')frag.append(bulkView());
     if(S.panel==='values')frag.append(valuesView());
   }
@@ -769,6 +976,15 @@ async function init(){
     S.idSet={};S.points.forEach(function(p){S.idSet[p.id]=1;});
     mark('points',snap);render();
   },onErr);
+  db.collection('quizzes').onSnapshot(function(snap){
+    S.quizzes=snap.docs.map(function(d){
+      var x=d.data()||{};
+      var qs=Array.isArray(x.qs)?x.qs.filter(function(q){return q&&Array.isArray(q.o)&&q.o.length>1;}):[];
+      var per=Number(x.per);
+      return {id:d.id,title:String(x.title||'مسابقة').slice(0,80),per:(isFinite(per)&&per>=1)?Math.round(per):1,qs:qs,active:x.active!==false,ts:Number(x.ts)||0};
+    }).filter(function(q){return q.qs.length;}).sort(function(a,b){return b.ts-a.ts;});
+    S.quizHave=true;render();
+  },function(){});
   db.doc('settings/values').onSnapshot(function(snap){
     var x=snap.exists?snap.data():null;
     if(x){CATS.forEach(function(c){
