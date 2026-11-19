@@ -489,6 +489,29 @@ async function deleteKid(row){
 function quizById(id){for(var i=0;i<S.quizzes.length;i++){if(S.quizzes[i].id===id)return S.quizzes[i];}return null;}
 function quizPointId(qid,kid){return 'q_'+qid+'_'+kid;}
 function attempts(qid){var n=0;S.points.forEach(function(p){if(p.id.indexOf('q_'+qid+'_')===0)n++;});return n;}
+function quizResults(qz){
+  var pre='q_'+qz.id+'_',out=[];
+  S.points.forEach(function(p){
+    if(p.id.indexOf(pre)!==0)return;
+    var kid=null;S.kids.forEach(function(k){if(k.id===p.kid)kid=k;});
+    var sc=p.score!=null?p.score:(qz.per?Math.round(p.amt/qz.per):0);
+    out.push({name:kid?kid.name:'(اسم محذوف)',score:sc,pts:p.amt,ts:p.ts});
+  });
+  out.sort(function(a,b){return b.score-a.score||a.ts-b.ts;});
+  return out;
+}
+function resultsView(qz){
+  var res=quizResults(qz);
+  if(!res.length)return h('p',{class:'muted',style:'margin:6px 0 10px'},'لسه محدش حلّ المسابقة دي.');
+  return h('ul',{class:'hist',style:'margin:6px 0 12px'},res.map(function(r,i){
+    return h('li',null,
+      h('span',{class:'hv'},(i+1)+'.'),
+      h('span',{class:'nm'},r.name),
+      h('span',{class:'sp'}),
+      h('span',{class:'chip good'},r.score+' / '+qz.qs.length),
+      h('span',{class:'hd'},r.pts+' نقطة · '+fmt(r.ts)));
+  }));
+}
 function parseQuiz(text){
   var blocks=String(text||'').split(/\r?\n\s*\r?\n/),qs=[],err=null;
   blocks.forEach(function(b){
@@ -553,7 +576,7 @@ async function submitQuiz(qz){
   var pts=score*qz.per;
   S.busy=true;S.msg=null;render();
   try{
-    await S.db.collection('points').doc(id).set({kid:kid,cat:'gospel',amt:pts,ts:Date.now(),day:todayKey(),quiz:qz.id});
+    await S.db.collection('points').doc(id).set({kid:kid,cat:'gospel',amt:pts,ts:Date.now(),day:todayKey(),quiz:qz.id,score:score,total:qz.qs.length});
     S.quiz.res={score:score,total:qz.qs.length,pts:pts};
     S.quiz.step='done';
     window.scrollTo(0,0);
@@ -660,15 +683,18 @@ function quizAdminView(){
     S.quizzes.length?h('div',{class:'lbl sep'},'المسابقات الموجودة'):null,
     S.quizzes.map(function(qz){
       var confirming=S.confirm==='quiz:'+qz.id;
-      return h('div',{class:'qrow'},
+      var showRes=S.quizRes===qz.id;
+      return h('div',null,h('div',{class:'qrow'},
         h('span',{class:'qt'},qz.title),
         h('span',{class:'hd'},qz.qs.length+' سؤال · '+attempts(qz.id)+' حلّوها'),
         h('span',{class:'chip '+(qz.active?'good':'none')},qz.active?'شغالة':'متقفلة'),
+        h('button',{type:'button',class:'btn small','aria-expanded':String(showRes),onclick:function(){S.quizRes=showRes?null:qz.id;render();}},showRes?'إخفاء النتايج':'النتايج'),
         h('button',{type:'button',class:'btn small ghost',disabled:S.busy,onclick:function(){toggleQuiz(qz);}},qz.active?'قفل':'تفعيل'),
         confirming
           ?[h('button',{type:'button',class:'btn small danger',disabled:S.busy,onclick:function(){deleteQuiz(qz);}},'تأكيد الحذف'),
             h('button',{type:'button',class:'btn small ghost',onclick:function(){S.confirm=null;render();}},'إلغاء')]
-          :h('button',{type:'button',class:'btn small dangerline',onclick:function(){S.confirm='quiz:'+qz.id;render();}},'حذف'));
+          :h('button',{type:'button',class:'btn small dangerline',onclick:function(){S.confirm='quiz:'+qz.id;render();}},'حذف')),
+        showRes?resultsView(qz):null);
     }));
 }
 
@@ -971,7 +997,9 @@ async function init(){
     S.points=snap.docs.map(function(d){
       var x=d.data()||{};
       var a=Number(x.amt);
-      return {id:d.id,kid:String(x.kid||''),cat:String(x.cat||''),amt:isFinite(a)?Math.round(a):0,ts:Number(x.ts)||0};
+      var sc=Number(x.score);
+      return {id:d.id,kid:String(x.kid||''),cat:String(x.cat||''),amt:isFinite(a)?Math.round(a):0,ts:Number(x.ts)||0,
+        score:(x.score!=null&&isFinite(sc))?sc:null};
     });
     S.idSet={};S.points.forEach(function(p){S.idSet[p.id]=1;});
     mark('points',snap);render();
