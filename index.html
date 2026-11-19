@@ -224,7 +224,7 @@ var S={
   panel:null,addText:'',
   values:{sunday:10,confession:10,mass:5,gospel:10},draft:null,
   bulk:{cat:'sunday',sel:{}},idSet:{},
-  quizzes:[],quizHave:false,quiz:null,qdraft:{title:'',per:'2',text:''}
+  quizzes:[],quizHave:false,quiz:null,qdraft:{title:'',per:'10',text:''}
 };
 
 /* ---------- helpers ---------- */
@@ -490,26 +490,36 @@ function quizById(id){for(var i=0;i<S.quizzes.length;i++){if(S.quizzes[i].id===i
 function quizPointId(qid,kid){return 'q_'+qid+'_'+kid;}
 function attempts(qid){var n=0;S.points.forEach(function(p){if(p.id.indexOf('q_'+qid+'_')===0)n++;});return n;}
 function quizResults(qz){
-  var pre='q_'+qz.id+'_',out=[];
+  var pre='q_'+qz.id+'_',lpre='qa_'+qz.id+'_',by={};
   S.points.forEach(function(p){
-    if(p.id.indexOf(pre)!==0)return;
-    var kid=null;S.kids.forEach(function(k){if(k.id===p.kid)kid=k;});
-    var sc=p.score!=null?p.score:(qz.per?Math.round(p.amt/qz.per):0);
-    out.push({name:kid?kid.name:'(اسم محذوف)',score:sc,pts:p.amt,ts:p.ts});
+    var first=p.id.indexOf(pre)===0,log=p.id.indexOf(lpre)===0;
+    if(!first&&!log)return;
+    var r=by[p.kid]||(by[p.kid]={pts:0,first:null,logs:[]});
+    if(first){r.pts=p.amt;r.first=p;}else r.logs.push(p);
   });
-  out.sort(function(a,b){return b.score-a.score||a.ts-b.ts;});
+  var out=[];
+  Object.keys(by).forEach(function(k){
+    var r=by[k],kid=null;
+    S.kids.forEach(function(x){if(x.id===k)kid=x;});
+    r.logs.sort(function(a,b){return a.ts-b.ts;});
+    if(!r.logs.length&&r.first)r.logs=[r.first];
+    out.push({name:kid?kid.name:'(اسم محذوف)',n:r.logs.length,pts:r.pts,
+      scores:r.logs.map(function(l){return l.score!=null?l.score:0;}),
+      ts:r.logs.length?r.logs[r.logs.length-1].ts:0});
+  });
+  out.sort(function(a,b){return b.pts-a.pts||b.n-a.n||a.name.localeCompare(b.name,'ar');});
   return out;
 }
 function resultsView(qz){
-  var res=quizResults(qz);
+  var res=quizResults(qz),T=qz.qs.length;
   if(!res.length)return h('p',{class:'muted',style:'margin:6px 0 10px'},'لسه محدش حلّ المسابقة دي.');
   return h('ul',{class:'hist',style:'margin:6px 0 12px'},res.map(function(r,i){
     return h('li',null,
       h('span',{class:'hv'},(i+1)+'.'),
       h('span',{class:'nm'},r.name),
       h('span',{class:'sp'}),
-      h('span',{class:'chip good'},r.score+' / '+qz.qs.length),
-      h('span',{class:'hd'},r.pts+' نقطة · '+fmt(r.ts)));
+      h('span',{class:'chip good'},r.pts+' نقطة'),
+      h('span',{class:'hd'},'دخل '+r.n+' مرة · الدرجات: '+r.scores.map(function(x){return x+'/'+T;}).join('، ')+(r.ts?' · آخر مرة '+fmt(r.ts):'')));
   }));
 }
 function parseQuiz(text){
@@ -540,7 +550,7 @@ async function createQuiz(){
   var d=S.qdraft,title=String(d.title||'').replace(/\s+/g,' ').trim().slice(0,80);
   var per=parseInt(d.per,10);
   if(!title){S.msg={t:'err',text:'اكتب اسم المسابقة.'};render();return;}
-  if(!isFinite(per)||per<1||per>MAX_AMT){S.msg={t:'err',text:'نقاط كل إجابة صح من 1 إلى '+MAX_AMT+'.'};render();return;}
+  if(!isFinite(per)||per<1||per>MAX_AMT){S.msg={t:'err',text:'نقاط الحل من 1 إلى '+MAX_AMT+'.'};render();return;}
   var pq=parseQuiz(d.text);
   if(pq.err){S.msg={t:'err',text:pq.err};render();return;}
   S.busy=true;S.msg=null;render();
@@ -570,14 +580,15 @@ async function deleteQuiz(qz){
 async function submitQuiz(qz){
   if(S.busy||!S.quiz||!S.quiz.kid)return;
   var kid=S.quiz.kid,id=quizPointId(qz.id,kid);
-  if(S.idSet[id]){S.msg={t:'err',text:'الاسم ده حلّ المسابقة قبل كده.'};S.quiz.step='name';render();return;}
   var score=0;
   qz.qs.forEach(function(x,i){if(S.quiz.ans[i]===x.c)score++;});
-  var pts=score*qz.per;
+  var pts=qz.per;
+  var repeat=!!S.idSet[id];
   S.busy=true;S.msg=null;render();
   try{
-    await S.db.collection('points').doc(id).set({kid:kid,cat:'gospel',amt:pts,ts:Date.now(),day:todayKey(),quiz:qz.id,score:score,total:qz.qs.length});
-    S.quiz.res={score:score,total:qz.qs.length,pts:pts};
+    if(!repeat)await S.db.collection('points').doc(id).set({kid:kid,cat:'gospel',amt:pts,ts:Date.now(),day:todayKey(),quiz:qz.id,score:score,total:qz.qs.length});
+    try{await S.db.collection('points').doc('qa_'+qz.id+'_'+kid+'_'+Date.now()).set({kid:kid,cat:'attempt',amt:0,ts:Date.now(),score:score});}catch(e2){}
+    S.quiz.res={score:score,total:qz.qs.length,pts:repeat?0:pts,repeat:repeat};
     S.quiz.step='done';
     window.scrollTo(0,0);
   }catch(e){S.msg={t:'err',text:errText(e)};}
@@ -614,15 +625,15 @@ function quizView(){
       .filter(function(k){return !q||norm(k.name).indexOf(q)>-1;});
     return h('section',{class:'addbox'},
       h('h2',null,qz.title),
-      h('p',null,'اختار اسمك من القايمة. '+qz.qs.length+' سؤال، وكل إجابة صح بـ '+qz.per+' نقطة. مرة واحدة بس لكل اسم.'),
+      h('p',null,'اختار اسمك من القايمة. '+qz.qs.length+' سؤال. لما تسلّم بتاخد '+qz.per+' نقطة. النقاط بتتحسب أول مرة بس.'),
       msgBox(),
       h('ul',{class:'checks',style:'margin-top:10px;max-height:none'},list.map(function(k){
         var done=!!S.idSet[quizPointId(qz.id,k.id)];
-        return h('li',null,h('button',{type:'button',class:'chk',disabled:done,onclick:function(){
+        return h('li',null,h('button',{type:'button',class:'chk',onclick:function(){
           Z.kid=k.id;Z.step='solve';S.q='';S.msg=null;
           var qi=$('#q');if(qi)qi.value='';
           window.scrollTo(0,0);render();
-        }},h('span',{class:'cn'},k.name),done?h('span',{class:'chip good'},'حلّ المسابقة'):null));
+        }},h('span',{class:'cn'},k.name),done?h('span',{class:'chip good'},'حلّها قبل كده'):null));
       })),
       !list.length?h('p',{class:'empty'},'مفيش اسم بالشكل ده.'):null,
       h('div',{class:'submit'},h('button',{type:'button',class:'btn ghost',onclick:quizExit},'رجوع')));
@@ -651,7 +662,7 @@ function quizView(){
     h('div',{class:'scorebox'},
       (kid?kid.name:''),
       h('b',null,r.score+' / '+r.total),
-      'اتضاف لك '+r.pts+' نقطة في الإنجيل'),
+      r.repeat?'حلّيتها قبل كده، فالنقاط اتحسبت لك أول مرة بس':('اتضاف لك '+r.pts+' نقطة في الإنجيل')),
     qz.qs.map(function(x,i){
       return h('div',{class:'qcard'},
         h('h3',null,(i+1)+'. '+x.q),
@@ -673,7 +684,7 @@ function quizAdminView(){
     h('input',{id:'qt',class:'field',style:'max-width:none',type:'text',maxlength:'80',placeholder:'اسم المسابقة',value:d.title,'aria-label':'اسم المسابقة',
       oninput:function(e){d.title=e.target.value;}}),
     h('div',{class:'vrow'},
-      h('label',{for:'qp'},'نقاط كل إجابة صح'),
+      h('label',{for:'qp'},'نقاط الحل (ثابتة لكل ولد)'),
       h('input',{id:'qp',class:'field',type:'number',inputmode:'numeric',min:'1',max:String(MAX_AMT),step:'1',value:d.per,
         oninput:function(e){d.per=e.target.value;}})),
     h('textarea',{id:'qx',class:'field',rows:'10',style:'margin-top:10px',placeholder:'مين اللي بنى الفلك؟\n*نوح\nإبراهيم\nموسى\n\nكام يوم صام السيد المسيح؟\n10\n*40\n7',
@@ -738,7 +749,7 @@ function formView(row){
     msgBox());
 }
 function historyView(row){
-  var evs=S.points.filter(function(p){return p.kid===row.kid.id;}).sort(function(a,b){return b.ts-a.ts;});
+  var evs=S.points.filter(function(p){return p.kid===row.kid.id&&p.cat!=='attempt';}).sort(function(a,b){return b.ts-a.ts;});
   if(!evs.length)return h('p',{class:'muted'},'مفيش نقاط متسجّلة لحد دلوقتي.');
   return h('ul',{class:'hist'},evs.slice(0,10).map(function(p){
     var confirming=S.confirm==='ev:'+p.id;
